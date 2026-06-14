@@ -1,0 +1,6 @@
+{
+  "name": "Classroom Quiz Game",
+  "description": "A real-time Kahoot-style classroom quiz platform featuring live buzzer responses, an AI-guided quiz generator, student avatars, and a live tracking scoreboard.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
