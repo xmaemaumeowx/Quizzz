@@ -37,6 +37,7 @@ interface SessionWithSockets extends GameSession {
   playerSockets: { [playerId: string]: WebSocket };
   botTimers: NodeJS.Timeout[];
   timerInterval: NodeJS.Timeout | null;
+  hostDisconnectTimeout?: NodeJS.Timeout | null;
 }
 
 const activeSessions: { [pin: string]: SessionWithSockets } = {};
@@ -414,6 +415,71 @@ wss.on('connection', (ws) => {
           break;
         }
 
+        case 'ping': {
+          ws.send(JSON.stringify({ type: 'server:pong' }));
+          break;
+        }
+
+        case 'host:reconnect': {
+          const { pin } = payload;
+          const parsedPin = String(pin).trim();
+          const session = activeSessions[parsedPin];
+          if (!session) {
+            ws.send(JSON.stringify({ type: 'server:error', payload: 'Reconnection failed: room no longer active.' }));
+            return;
+          }
+
+          if (session.hostDisconnectTimeout) {
+            clearTimeout(session.hostDisconnectTimeout);
+            session.hostDisconnectTimeout = null;
+          }
+
+          isHost = true;
+          boundPin = parsedPin;
+          session.hostSocket = ws;
+
+          broadcastSessionState(parsedPin);
+          break;
+        }
+
+        case 'player:reconnect': {
+          const { pin, playerId, nickname, avatar } = payload;
+          const parsedPin = String(pin).trim();
+          const session = activeSessions[parsedPin];
+          if (!session) {
+            ws.send(JSON.stringify({ type: 'server:error', payload: 'Reconnection failed: Room ended.' }));
+            return;
+          }
+
+          boundPin = parsedPin;
+          boundPlayerId = playerId;
+          isHost = false;
+
+          if (!session.players[playerId]) {
+            session.players[playerId] = {
+              id: playerId,
+              nickname: nickname || `Player ${Object.keys(session.players).length + 1}`,
+              avatar: avatar || '🦊',
+              score: 0,
+              streak: 0,
+              lastAnswerCorrect: null,
+              lastPointsEarned: 0,
+              answeredThisQuestion: false,
+              isBot: false,
+            };
+          }
+
+          session.playerSockets[playerId] = ws;
+
+          ws.send(JSON.stringify({
+            type: 'server:player_feedback',
+            payload: { reconnected: true, player: session.players[playerId], pin: parsedPin }
+          }));
+
+          broadcastSessionState(parsedPin);
+          break;
+        }
+
         case 'player:join': {
           const { pin, nickname, avatar } = payload;
           const parsedPin = String(pin).trim();
@@ -546,25 +612,37 @@ wss.on('connection', (ws) => {
   // Handle disconnects elegantly
   ws.on('close', () => {
     if (isHost && boundPin) {
-      // If the host disconnects, cleanly notify players and close the session
       const session = activeSessions[boundPin];
       if (session) {
-        if (session.timerInterval) clearInterval(session.timerInterval);
-        session.botTimers.forEach(clearTimeout);
+        session.hostSocket = null;
+        console.log(`Host socket disconnected for PIN ${boundPin}. Waiting 45s grace period for reconnection...`);
+        
+        // Clear any old hostDisconnectTimeout
+        if (session.hostDisconnectTimeout) clearTimeout(session.hostDisconnectTimeout);
+        
+        session.hostDisconnectTimeout = setTimeout(() => {
+          // If 45 seconds have passed and they still didn't reconnect, purge session!
+          const activeSession = activeSessions[boundPin!];
+          if (activeSession && !activeSession.hostSocket) {
+            console.log(`Grace period expired for PIN ${boundPin!}. Purging session.`);
+            if (activeSession.timerInterval) clearInterval(activeSession.timerInterval);
+            activeSession.botTimers.forEach(clearTimeout);
 
-        Object.values(session.playerSockets).forEach((pSocket) => {
-          if (pSocket.readyState === WebSocket.OPEN) {
-            pSocket.send(JSON.stringify({ type: 'server:error', payload: 'Host disconnected! Session ended.' }));
+            Object.values(activeSession.playerSockets).forEach((pSocket) => {
+              if (pSocket.readyState === WebSocket.OPEN) {
+                pSocket.send(JSON.stringify({ type: 'server:error', payload: 'Host disconnected! Session ended.' }));
+              }
+            });
+            delete activeSessions[boundPin!];
           }
-        });
-        delete activeSessions[boundPin];
+        }, 45000); // 45 seconds grace period
       }
     } else if (boundPin && boundPlayerId) {
-      // Player disconnected logic
+      // Player disconnected logic - keep in roster for reconnection
       const session = activeSessions[boundPin];
       if (session) {
-        delete session.players[boundPlayerId];
         delete session.playerSockets[boundPlayerId];
+        console.log(`Player socket disconnected ${boundPlayerId} (PIN ${boundPin}). Keeping they in roster.`);
         broadcastSessionState(boundPin);
       }
     }

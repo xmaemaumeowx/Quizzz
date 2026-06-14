@@ -27,33 +27,67 @@ export default function PlayerGame({ initialPin = '', onExit }: PlayerGameProps)
   const [submittingAnswer, setSubmittingAnswer] = useState(false);
   const [answerSubmitted, setAnswerSubmitted] = useState<number | null>(null);
 
+  const [reconnectCount, setReconnectCount] = useState(0);
+  const [isReconnecting, setIsReconnecting] = useState(false);
+  const playerRef = useRef<Player | null>(null);
+  const pinRef = useRef<string>('');
+  
   const wsRef = useRef<WebSocket | null>(null);
 
-  // Auto connect or join WS on form submit
-  const handleJoinGame = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!pin.trim() || !nickname.trim()) return;
+  useEffect(() => {
+    return () => {
+      if (wsRef.current) {
+        wsRef.current.close();
+      }
+    };
+  }, []);
 
-    setLoading(true);
-    setError(null);
+  // Heartbeat ping-pong to maintain keep-alive
+  useEffect(() => {
+    const interval = setInterval(() => {
+      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+        wsRef.current.send(JSON.stringify({ type: 'ping' }));
+      }
+    }, 10000); // 10 seconds
+    return () => clearInterval(interval);
+  }, []);
 
-    // Open connection
+  // Connects or reconnects the player socket
+  const connectPlayer = () => {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const wsUrl = `${protocol}//${window.location.host}`;
     const ws = new WebSocket(wsUrl);
     wsRef.current = ws;
 
     ws.onopen = () => {
-      // Send join message
-      const msg: WSMessage = {
-        type: 'player:join',
-        payload: {
-          pin: pin.trim(),
-          nickname: nickname.trim().slice(0, 15),
-          avatar: selectedAvatar,
-        }
-      };
-      ws.send(JSON.stringify(msg));
+      setIsReconnecting(false);
+      setReconnectCount(0);
+      setError(null);
+
+      // If we already had a successfully joined player, reconnect!
+      if (playerRef.current) {
+        const msg = {
+          type: 'player:reconnect' as const,
+          payload: {
+            pin: pinRef.current,
+            playerId: playerRef.current.id,
+            nickname: playerRef.current.nickname,
+            avatar: playerRef.current.avatar,
+          }
+        };
+        ws.send(JSON.stringify(msg));
+      } else {
+        // Initial join
+        const msg: WSMessage = {
+          type: 'player:join',
+          payload: {
+            pin: pinRef.current,
+            nickname: nickname.trim().slice(0, 15),
+            avatar: selectedAvatar,
+          }
+        };
+        ws.send(JSON.stringify(msg));
+      }
     };
 
     ws.onmessage = (event) => {
@@ -62,20 +96,23 @@ export default function PlayerGame({ initialPin = '', onExit }: PlayerGameProps)
         const { type, payload } = message;
 
         if (type === 'server:player_feedback') {
-          if (payload.joined) {
+          if (payload.joined || payload.reconnected) {
             setJoined(true);
             setPlayer(payload.player);
+            playerRef.current = payload.player;
             setLoading(false);
           } else {
             // Direct answer feedback! (correct/incorrect)
             setActiveFeedback(payload);
             setSubmittingAnswer(false);
-            if (player) {
-              setPlayer({
-                ...player,
+            if (playerRef.current) {
+              const updatedPlayer = {
+                ...playerRef.current,
                 score: payload.totalScore,
                 streak: payload.currentStreak
-              });
+              };
+              setPlayer(updatedPlayer);
+              playerRef.current = updatedPlayer;
             }
           }
         } else if (type === 'server:game_state') {
@@ -86,12 +123,11 @@ export default function PlayerGame({ initialPin = '', onExit }: PlayerGameProps)
             setActiveFeedback(null);
             setAnswerSubmitted(null);
           }
-          if (payload.state === 'lobby' && joined) {
-            // Updated roster details
-            const matchedMe = payload.players[player?.id || ''];
-            if (matchedMe) {
-              setPlayer(matchedMe);
-            }
+          
+          const matchedMe = payload.players[playerRef.current?.id || ''];
+          if (matchedMe) {
+            setPlayer(matchedMe);
+            playerRef.current = matchedMe;
           }
         } else if (type === 'server:error') {
           setError(payload);
@@ -103,14 +139,40 @@ export default function PlayerGame({ initialPin = '', onExit }: PlayerGameProps)
     };
 
     ws.onclose = () => {
-      setLoading(false);
-      setError('Room closed or disconnected from classroom host.');
+      if (playerRef.current && reconnectCount < 15) {
+        setIsReconnecting(true);
+        const nextAttempt = reconnectCount + 1;
+        setReconnectCount(nextAttempt);
+        setTimeout(() => {
+          console.log(`Reconnecting player... Attempt ${nextAttempt}`);
+          connectPlayer();
+        }, 2000);
+      } else {
+        setIsReconnecting(false);
+        setLoading(false);
+        if (playerRef.current) {
+          setError('Room closed or disconnected from classroom host after multiple retries.');
+        } else {
+          setError('Room closed or disconnected from classroom host.');
+        }
+      }
     };
 
     ws.onerror = () => {
-      setLoading(false);
-      setError('Communication server error. Check your PIN.');
+      if (ws) ws.close();
     };
+  };
+
+  // Auto connect or join WS on form submit
+  const handleJoinGame = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!pin.trim() || !nickname.trim()) return;
+
+    setLoading(true);
+    setError(null);
+    pinRef.current = pin.trim();
+
+    connectPlayer();
   };
 
   const submitAnswer = (optionIdx: number) => {
@@ -247,6 +309,13 @@ export default function PlayerGame({ initialPin = '', onExit }: PlayerGameProps)
       <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 md:p-8 shadow-xl text-white text-center space-y-6 max-w-sm mx-auto relative flex flex-col justify-between min-h-[350px]" id="player-lobby-wait">
         <div className="absolute inset-0 bg-[radial-gradient(ellipse_60%_60%_at_50%_-10%,rgba(16,185,129,0.1),rgba(255,255,255,0))]" />
         
+        {isReconnecting && (
+          <div className="absolute top-2 left-1/2 -translate-x-1/2 bg-amber-500 text-slate-950 font-black text-[10px] px-3 py-1 rounded-full shadow-lg flex items-center space-x-1 z-50 animate-pulse">
+            <Loader2 className="w-3 h-3 animate-spin" />
+            <span>Reconnecting ({reconnectCount}/15)...</span>
+          </div>
+        )}
+
         <div className="relative z-10 space-y-4">
           <div className="text-xs font-bold text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 rounded-full px-3 py-1 inline-block">
             ● Logged In Successfully!
@@ -285,7 +354,13 @@ export default function PlayerGame({ initialPin = '', onExit }: PlayerGameProps)
   // 3. GET READY COUNTDOWN SCREEN
   if (roomState?.state === 'get_ready') {
     return (
-      <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 shadow-xl text-white text-center space-y-4 max-w-xs mx-auto flex flex-col items-center justify-center min-h-[300px]" id="player-get-ready">
+      <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 shadow-xl text-white text-center space-y-4 max-w-xs mx-auto flex flex-col items-center justify-center min-h-[300px] relative" id="player-get-ready">
+        {isReconnecting && (
+          <div className="absolute top-2 left-1/2 -translate-x-1/2 bg-amber-500 text-slate-950 font-black text-[10px] px-3 py-1 rounded-full shadow-lg flex items-center space-x-1 z-50 animate-pulse">
+            <Loader2 className="w-3 h-3 animate-spin" />
+            <span>Reconnecting ({reconnectCount}/15)...</span>
+          </div>
+        )}
         <div className="w-12 h-12 rounded-full border-2 border-indigo-500 border-t-transparent animate-spin mb-2" />
         <span className="text-xs uppercase tracking-widest text-indigo-400 font-bold font-mono">Get Ready!</span>
         <h3 className="text-lg font-black text-slate-200">
@@ -302,7 +377,13 @@ export default function PlayerGame({ initialPin = '', onExit }: PlayerGameProps)
     const currentQuestion = roomState.questions[roomState.currentQuestionIndex];
     
     return (
-      <div className="bg-slate-900 border border-slate-800 rounded-3xl p-4 md:p-6 shadow-xl text-white flex flex-col justify-between space-y-4 max-w-sm mx-auto min-h-[380px]" id="player-buzzer-screen">
+      <div className="bg-slate-900 border border-slate-800 rounded-3xl p-4 md:p-6 shadow-xl text-white flex flex-col justify-between space-y-4 max-w-sm mx-auto min-h-[380px] relative" id="player-buzzer-screen">
+        {isReconnecting && (
+          <div className="absolute top-2 left-1/2 -translate-x-1/2 bg-amber-500 text-slate-950 font-black text-[10px] px-3 py-1 rounded-full shadow-lg flex items-center space-x-1 z-50 animate-pulse">
+            <Loader2 className="w-3 h-3 animate-spin" />
+            <span>Reconnecting ({reconnectCount}/15)...</span>
+          </div>
+        )}
         <div className="flex items-center justify-between border-b border-slate-800 pb-2">
           <span className="text-xs font-mono font-bold text-slate-400">
             Q {roomState.currentQuestionIndex + 1} &middot; {roomState.timer}s left
@@ -371,13 +452,19 @@ export default function PlayerGame({ initialPin = '', onExit }: PlayerGameProps)
 
     return (
       <div
-        className={`border-4 rounded-3xl p-6 text-white text-center space-y-6 max-w-sm mx-auto flex flex-col justify-between min-h-[380px] shadow-2xl transition duration-500 ${
+        className={`border-4 rounded-3xl p-6 text-white text-center space-y-6 max-w-sm mx-auto flex flex-col justify-between min-h-[380px] shadow-2xl transition duration-500 relative ${
           gotItCorrect
             ? 'bg-emerald-900/90 border-emerald-500 ring-4 ring-emerald-500/20'
             : 'bg-rose-950 border-rose-500'
         }`}
         id="player-reveal-splash"
       >
+        {isReconnecting && (
+          <div className="absolute top-2 left-1/2 -translate-x-1/2 bg-amber-500 text-slate-950 font-black text-[10px] px-3 py-1 rounded-full shadow-lg flex items-center space-x-1 z-50 animate-pulse">
+            <Loader2 className="w-3 h-3 animate-spin" />
+            <span>Reconnecting ({reconnectCount}/15)...</span>
+          </div>
+        )}
         <div className="space-y-4 pt-4">
           <div className="flex justify-center">
             {gotItCorrect ? (
@@ -430,7 +517,13 @@ export default function PlayerGame({ initialPin = '', onExit }: PlayerGameProps)
   // 6. SCOREBOARD WAITING VIEW
   if (roomState?.state === 'scoreboard') {
     return (
-      <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 shadow-xl text-white text-center space-y-4 max-w-xs mx-auto flex flex-col items-center justify-center min-h-[300px]" id="player-score-wait">
+      <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 shadow-xl text-white text-center space-y-4 max-w-xs mx-auto flex flex-col items-center justify-center min-h-[300px] relative" id="player-score-wait">
+        {isReconnecting && (
+          <div className="absolute top-2 left-1/2 -translate-x-1/2 bg-amber-500 text-slate-950 font-black text-[10px] px-3 py-1 rounded-full shadow-lg flex items-center space-x-1 z-50 animate-pulse">
+            <Loader2 className="w-3 h-3 animate-spin" />
+            <span>Reconnecting ({reconnectCount}/15)...</span>
+          </div>
+        )}
         <Trophy className="w-10 h-10 text-amber-500" />
         <span className="text-xs uppercase tracking-widest text-slate-400 font-bold font-mono">Waiting for Host</span>
         <h3 className="text-lg font-black text-slate-200">Reviewing Scoreholder Standings</h3>
@@ -455,9 +548,16 @@ export default function PlayerGame({ initialPin = '', onExit }: PlayerGameProps)
     const rankEmojis = ['🥇 1st Place! Champion! 🏆', '🥈 2nd Place! Outstanding! 🥈', '🥉 3rd Place! Magnificent! 🥉'];
 
     return (
-      <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 shadow-xl text-white text-center space-y-6 max-w-sm mx-auto flex flex-col justify-between min-h-[380px]" id="player-gameover-podium">
+      <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 shadow-xl text-white text-center space-y-6 max-w-sm mx-auto flex flex-col justify-between min-h-[380px] relative" id="player-gameover-podium">
         <div className="absolute inset-0 bg-[radial-gradient(ellipse_60%_60%_at_50%_-10%,rgba(234,179,8,0.1),rgba(255,255,255,0))]" />
         
+        {isReconnecting && (
+          <div className="absolute top-2 left-1/2 -translate-x-1/2 bg-amber-500 text-slate-950 font-black text-[10px] px-3 py-1 rounded-full shadow-lg flex items-center space-x-1 z-50 animate-pulse">
+            <Loader2 className="w-3 h-3 animate-spin" />
+            <span>Reconnecting ({reconnectCount}/15)...</span>
+          </div>
+        )}
+
         <div className="relative z-10 space-y-5">
           <span className="text-3xl">🏁</span>
           <h2 className="text-2xl font-black text-white tracking-tight leading-none">Game Finished!</h2>

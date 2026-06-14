@@ -48,6 +48,7 @@ export interface GameSession {
 export type WSMessageType =
   // Host Messages
   | 'host:create'
+  | 'host:reconnect'
   | 'host:start_game'
   | 'host:next_question'
   | 'host:reveal_answer'
@@ -55,11 +56,14 @@ export type WSMessageType =
   | 'host:toggle_bots'
   // Player Messages
   | 'player:join'
+  | 'player:reconnect'
   | 'player:submit_answer'
+  | 'ping'
   // Server Broadcasts / Direct Messages
   | 'server:lobby_state'
   | 'server:game_state'
   | 'server:player_feedback'
+  | 'server:pong'
   | 'server:error';
 
 export interface WSMessage {

@@ -17,61 +17,118 @@ export default function HostGame({ quizId, onExit }: HostGameProps) {
   const [wsConnected, setWsConnected] = useState(false);
   const [countdown, setCountdown] = useState<number>(3);
   
+  const [reconnectCount, setReconnectCount] = useState(0);
+  const [isReconnecting, setIsReconnecting] = useState(false);
+  const pinRef = useRef<string | null>(null);
+  
   const wsRef = useRef<WebSocket | null>(null);
 
   // Sound effects or feedback alerts (using state indicators)
   const [bellAlert, setBellAlert] = useState(false);
 
   useEffect(() => {
-    // Connect to WebSocket server on the same host & port
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${protocol}//${window.location.host}`;
-    const ws = new WebSocket(wsUrl);
-    wsRef.current = ws;
+    let active = true;
+    let ws: WebSocket | null = null;
+    let reconnectTimeoutId: any = null;
 
-    ws.onopen = () => {
-      setWsConnected(true);
-      // Create session on server
-      const msg: WSMessage = {
-        type: 'host:create',
-        payload: { quizId }
-      };
-      ws.send(JSON.stringify(msg));
-    };
+    function connect() {
+      if (!active) return;
+      
+      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const wsUrl = `${protocol}//${window.location.host}`;
+      ws = new WebSocket(wsUrl);
+      wsRef.current = ws;
 
-    ws.onmessage = (event) => {
-      try {
-        const message: WSMessage = JSON.parse(event.data);
-        const { type, payload } = message;
+      ws.onopen = () => {
+        if (!active) return;
+        setWsConnected(true);
+        setIsReconnecting(false);
+        setReconnectCount(0);
+        setError(null);
 
-        if (type === 'server:game_state') {
-          setSession(payload);
-          if (!pin && payload.pin) {
-            setPin(payload.pin);
-          }
-        } else if (type === 'server:error') {
-          setError(payload);
+        // If we already have a PIN in pinRef.current, we are reconnecting!
+        if (pinRef.current) {
+          const msg = {
+            type: 'host:reconnect' as const,
+            payload: { pin: pinRef.current }
+          };
+          ws?.send(JSON.stringify(msg));
+        } else {
+          // Otherwise, create a new session
+          const msg: WSMessage = {
+            type: 'host:create',
+            payload: { quizId }
+          };
+          ws?.send(JSON.stringify(msg));
         }
-      } catch (err) {
-        console.error('Failed to parse websocket message:', err);
-      }
-    };
+      };
 
-    ws.onclose = () => {
-      setWsConnected(false);
-      setError('Connection to classroom server lost.');
-    };
+      ws.onmessage = (event) => {
+        if (!active) return;
+        try {
+          const message: WSMessage = JSON.parse(event.data);
+          const { type, payload } = message;
 
-    ws.onerror = () => {
-      setError('WebSocket server communication error.');
-    };
+          if (type === 'server:game_state') {
+            setSession(payload);
+            if (payload.pin) {
+              setPin(payload.pin);
+              pinRef.current = payload.pin; // Keep in ref for reconnection
+            }
+          } else if (type === 'server:error') {
+            setError(payload);
+          }
+        } catch (err) {
+          console.error('Failed to parse websocket message:', err);
+        }
+      };
+
+      ws.onclose = () => {
+        if (!active) return;
+        setWsConnected(false);
+        
+        // Try to reconnect if we haven't reached the limit
+        if (pinRef.current && reconnectCount < 15) {
+          setIsReconnecting(true);
+          const nextAttempt = reconnectCount + 1;
+          setReconnectCount(nextAttempt);
+          
+          reconnectTimeoutId = setTimeout(() => {
+            console.log(`Reconnecting host... Attempt ${nextAttempt}`);
+            connect();
+          }, 2000);
+        } else {
+          setIsReconnecting(false);
+          // If no pin, it failed initial connection or is closing elegantly
+          if (pinRef.current) {
+            setError('Connection to classroom server lost.');
+          }
+        }
+      };
+
+      ws.onerror = () => {
+        if (ws) ws.close();
+      };
+    }
+
+    connect();
 
     return () => {
-      if (wsRef.current) {
-        wsRef.current.close();
-      }
+      active = false;
+      if (ws) ws.close();
+      if (reconnectTimeoutId) clearTimeout(reconnectTimeoutId);
     };
-  }, [quizId]);
+  }, [quizId, reconnectCount]);
+
+  // Keep alive heartbeat ping-pong
+  useEffect(() => {
+    const interval = setInterval(() => {
+      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+        wsRef.current.send(JSON.stringify({ type: 'ping' }));
+      }
+    }, 10000); // 10 seconds
+    return () => clearInterval(interval);
+  }, []);
 
   // Countdown timer for countdown stage
   useEffect(() => {
@@ -227,7 +284,14 @@ export default function HostGame({ quizId, onExit }: HostGameProps) {
         </div>
         <div className="flex items-center space-x-3">
           <div className="text-slate-400 text-xs font-semibold">
-            Status: <span className="text-emerald-400 font-bold">● Connection Live</span>
+            Status:{' '}
+            {isReconnecting ? (
+              <span className="text-amber-400 font-bold animate-pulse">⚡ Reconnecting (Attempt {reconnectCount}/15)...</span>
+            ) : wsConnected ? (
+              <span className="text-emerald-400 font-bold">● Connection Live</span>
+            ) : (
+              <span className="text-rose-400 font-bold">● Offline</span>
+            )}
           </div>
           <button
             onClick={onExit}
