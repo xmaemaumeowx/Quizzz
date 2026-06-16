@@ -5,6 +5,53 @@ import { Users, Bot, Play, FastForward, Trophy, Home, AlertCircle, ArrowRight, L
 import { BarChart, Bar, Cell, XAxis, YAxis, ResponsiveContainer } from 'recharts';
 import { motion, AnimatePresence } from 'motion/react';
 
+interface AnimateScoreProps {
+  finalScore: number;
+  lastPointsEarned: number;
+  isMainPodium?: boolean;
+}
+
+const AnimateScore: React.FC<AnimateScoreProps> = ({ finalScore, lastPointsEarned, isMainPodium }) => {
+  const startScore = Math.max(0, finalScore - lastPointsEarned);
+  const [currentScore, setCurrentScore] = useState(startScore);
+
+  useEffect(() => {
+    if (!lastPointsEarned || lastPointsEarned <= 0) {
+      setCurrentScore(finalScore);
+      return;
+    }
+
+    let active = true;
+    let startTimestamp: number | null = null;
+    const duration = 2000; // 2 seconds sum up duration for dramatic effect
+
+    const step = (timestamp: number) => {
+      if (!active) return;
+      if (!startTimestamp) startTimestamp = timestamp;
+      const progress = Math.min((timestamp - startTimestamp) / duration, 1);
+      
+      // Quartic easing out for smooth deceleration at the end
+      const easedProgress = 1 - Math.pow(1 - progress, 4);
+      
+      const current = Math.floor(startScore + (lastPointsEarned * easedProgress));
+      setCurrentScore(current);
+
+      if (progress < 1) {
+        requestAnimationFrame(step);
+      } else {
+        setCurrentScore(finalScore);
+      }
+    };
+
+    requestAnimationFrame(step);
+    return () => {
+      active = false;
+    };
+  }, [finalScore, lastPointsEarned, startScore]);
+
+  return <span>{currentScore.toLocaleString()} pts</span>;
+};
+
 interface HostGameProps {
   quizId: string;
   onExit: () => void;
@@ -619,7 +666,9 @@ export default function HostGame({ quizId, onExit }: HostGameProps) {
                         )}
                       </div>
                       <div className="flex items-center space-x-3 font-mono">
-                        <span className="text-right font-black tracking-tight text-sm">{player.score} pts</span>
+                        <span className="text-right font-black tracking-tight text-sm">
+                          <AnimateScore finalScore={player.score} lastPointsEarned={player.lastPointsEarned} />
+                        </span>
                         {player.lastPointsEarned > 0 && (
                           <span className="text-xs text-emerald-400 font-black animate-bounce">+{player.lastPointsEarned}</span>
                         )}
@@ -670,7 +719,9 @@ export default function HostGame({ quizId, onExit }: HostGameProps) {
                   <span className="absolute -top-1.5 -right-1 bg-slate-400 text-slate-950 text-[10px] font-black w-5 h-5 rounded-full flex items-center justify-center shadow-lg">2</span>
                 </div>
                 <div className="text-xs font-black text-slate-200 mt-2 truncate w-24 text-center">{getPodiumSorted()[1].nickname}</div>
-                <div className="text-[10px] font-mono text-slate-300 font-extrabold">{getPodiumSorted()[1].score} pts</div>
+                <div className="text-[10px] font-mono text-slate-300 font-extrabold">
+                  <AnimateScore finalScore={getPodiumSorted()[1].score} lastPointsEarned={getPodiumSorted()[1].score} />
+                </div>
                 {/* Visual Pedestal bar */}
                 <div className="w-20 md:w-24 bg-[#3c137a] border-x border-t border-white/10 rounded-t-2xl h-28 flex items-center justify-center shadow mt-3">
                   <span className="text-lg font-black text-slate-200">2nd</span>
@@ -692,7 +743,9 @@ export default function HostGame({ quizId, onExit }: HostGameProps) {
                   <span className="absolute -top-1.5 -right-1 bg-vibrant-gold text-vibrant-purple-dark text-xs font-black w-6 h-6 rounded-full flex items-center justify-center shadow-lg border border-white">1</span>
                 </div>
                 <div className="text-md font-black text-vibrant-gold mt-2 truncate w-28 text-center">{getPodiumSorted()[0].nickname}</div>
-                <div className="text-xs font-mono text-white font-black">{getPodiumSorted()[0].score} pts</div>
+                <div className="text-xs font-mono text-white font-black">
+                  <AnimateScore finalScore={getPodiumSorted()[0].score} lastPointsEarned={getPodiumSorted()[0].score} />
+                </div>
                 {/* Visual Pedestal bar */}
                 <div className="w-24 md:w-28 bg-gradient-to-t from-[#B8860B] to-vibrant-gold border-x border-t border-white/20 rounded-t-2xl h-40 flex items-center justify-center shadow-lg mt-3">
                   <span className="text-2xl font-black text-vibrant-purple-dark uppercase">👑 1st</span>
@@ -714,7 +767,9 @@ export default function HostGame({ quizId, onExit }: HostGameProps) {
                   <span className="absolute -top-1.5 -right-1 bg-amber-600 text-slate-950 text-[10px] font-black w-5 h-5 rounded-full flex items-center justify-center shadow-lg">3</span>
                 </div>
                 <div className="text-xs font-black text-slate-200 mt-2 truncate w-24 text-center">{getPodiumSorted()[2].nickname}</div>
-                <div className="text-[10px] font-mono text-slate-300 font-extrabold">{getPodiumSorted()[2].score} pts</div>
+                <div className="text-[10px] font-mono text-slate-300 font-extrabold">
+                  <AnimateScore finalScore={getPodiumSorted()[2].score} lastPointsEarned={getPodiumSorted()[2].score} />
+                </div>
                 {/* Visual Pedestal bar */}
                 <div className="w-20 md:w-24 bg-[#3c137a]/80 border-x border-t border-white/10 rounded-t-2xl h-20 flex items-center justify-center shadow mt-3">
                   <span className="text-sm font-black text-slate-300">3rd</span>

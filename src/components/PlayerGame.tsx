@@ -4,6 +4,51 @@ import { OPTION_STYLES } from '../data/optionStyles';
 import { Loader2, ArrowRight, User, CircleHelp, AlertCircle, CheckCircle, XCircle, Flame, Trophy, Play, Check } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
+interface AnimateScoreProps {
+  finalScore: number;
+  lastPointsEarned: number;
+}
+
+const AnimateScore: React.FC<AnimateScoreProps> = ({ finalScore, lastPointsEarned }) => {
+  const startScore = Math.max(0, finalScore - lastPointsEarned);
+  const [currentScore, setCurrentScore] = useState(startScore);
+
+  useEffect(() => {
+    if (!lastPointsEarned || lastPointsEarned <= 0) {
+      setCurrentScore(finalScore);
+      return;
+    }
+
+    let active = true;
+    let startTimestamp: number | null = null;
+    const duration = 1500; // 1.5 seconds rollup duration
+
+    const step = (timestamp: number) => {
+      if (!active) return;
+      if (!startTimestamp) startTimestamp = timestamp;
+      const progress = Math.min((timestamp - startTimestamp) / duration, 1);
+      
+      const easedProgress = progress * (2 - progress); // quadratic easement
+      
+      const current = Math.floor(startScore + (lastPointsEarned * easedProgress));
+      setCurrentScore(current);
+
+      if (progress < 1) {
+        requestAnimationFrame(step);
+      } else {
+        setCurrentScore(finalScore);
+      }
+    };
+
+    requestAnimationFrame(step);
+    return () => {
+      active = false;
+    };
+  }, [finalScore, lastPointsEarned, startScore]);
+
+  return <span>{currentScore.toLocaleString()} pts</span>;
+};
+
 // Avatars lists
 const ANIMALS_AVATARS = ['🦊', '🐱', '🐼', '🦁', '🐨', '🦖', '🐯', '🐙', '🦖', '🦄', '🐝', '🐷', '🚀', '🍩', '🥑', '👾'];
 
@@ -498,7 +543,9 @@ export default function PlayerGame({ initialPin = '', onExit }: PlayerGameProps)
             <div className="text-3xl font-black font-mono tracking-tight text-white">
               {gotItCorrect ? `+${activeFeedback?.pointsEarned || 0}` : '+0'}
             </div>
-            <div className="text-xs text-slate-400 font-mono">Total Score: {player?.score}</div>
+            <div className="text-xs text-slate-400 font-mono">
+              Total Score: <AnimateScore finalScore={player?.score || 0} lastPointsEarned={activeFeedback?.pointsEarned || 0} />
+            </div>
           </div>
 
           {gotItCorrect && player && player.streak > 1 && (
@@ -531,7 +578,7 @@ export default function PlayerGame({ initialPin = '', onExit }: PlayerGameProps)
           Check if your name cracked the Top 5 roster list on the Presenter screen!
         </p>
         <div className="py-1 px-3 bg-slate-950 rounded-full border border-slate-850 font-mono font-bold text-xs text-indigo-400">
-          Your score: {player?.score} pts
+          Your score: <AnimateScore finalScore={player?.score || 0} lastPointsEarned={activeFeedback?.pointsEarned || 0} />
         </div>
       </div>
     );
@@ -572,7 +619,9 @@ export default function PlayerGame({ initialPin = '', onExit }: PlayerGameProps)
             <div className="text-lg font-black text-amber-400">
               {myRank <= 3 ? rankEmojis[myRank - 1] : `Rank #${myRank} of ${sorted.length}`}
             </div>
-            <p className="text-xs text-slate-400 font-mono mt-1">Final Score: {player?.score} points</p>
+            <p className="text-xs text-slate-400 font-mono mt-1">
+              Final Score: <AnimateScore finalScore={player?.score || 0} lastPointsEarned={player?.score || 0} />
+            </p>
           </div>
         </div>
 
